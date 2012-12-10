@@ -23,6 +23,7 @@
 //    Zhang Ying, zhangying913@gmail.com
 //    Xu Pang, pangxu010@163.com
 //    Wu Zailong, bullet@yeah.net
+//    Seunghoon Park, pclove1@gmail.com
 //
 // Redistribution and use in source and binary forms, with or without modification,
 // are permitted provided that the following conditions are met:
@@ -110,6 +111,10 @@ void cv::ocl::convolve(const oclMat &, const oclMat &, oclMat &)
 {
     throw_nogpu();
 }
+void cv::ocl::rotate(const oclMat &, oclMat &, Size, double, double, double, int)
+{
+    throw_nogpu();
+}
 
 #else /* !defined (HAVE_OPENCL) */
 
@@ -134,6 +139,7 @@ namespace cv
         extern const char *imgproc_calcHarris;
         extern const char *imgproc_calcMinEigenVal;
         extern const char *imgproc_convolve;
+        extern const char *imgproc_rotate;
         ////////////////////////////////////OpenCL call wrappers////////////////////////////
 
         template <typename T> struct index_and_sizeof;
@@ -1257,6 +1263,94 @@ namespace cv
             dst.create(src.size(), CV_32F);
             corner_ocl(imgproc_calcMinEigenVal, "calcMinEigenVal", blockSize, 0, Dx, Dy, dst, borderType);
         }
+
+        ///////////////////////////////// rotate /////////////////////////////////
+        void rotate(const oclMat& src, oclMat& dst, Size dsize, double angle,
+                    double xShift, double yShift, int interpolation)
+        {
+            CV_Assert(src.type() == CV_32FC1);
+
+            Mat rot_mat = getRotationMatrix2D(Point2f(dsize.width*0.5, dsize.height*0.5),
+                                              angle,
+                                              1);
+            CV_Assert(rot_mat.type() == CV_64FC1);
+            rot_mat.convertTo(rot_mat, CV_32FC1);
+            Mat inv_rot_mat;
+            invertAffineTransform(rot_mat, inv_rot_mat);
+            CV_Assert(inv_rot_mat.type() == CV_32FC1);
+            
+            //ocl::oclMat inv_rot_oclMat(inv_rot_mat);
+            
+            src.copyTo(dst);
+            dst = 0.0;
+
+            size_t elemSize = src.elemSize();
+            CV_Assert(elemSize == dst.elemSize());
+            CV_Assert(src.size() == dst.size());
+
+            Context *clCxt = src.clCxt;
+
+            //Arrange the NDRange
+            // int col = src.cols, row = src.rows;
+            // int ltx = 16, lty = 8;
+            // if(src.cols % ltx != 0)
+            //     col = (col / ltx + 1) * ltx;
+            // if(src.rows % lty != 0)
+            //     row = (row / lty + 1) * lty;
+
+            // size_t globalThreads[3] = {col, row, 1};
+            // size_t localThreads[3]  = {ltx, lty, 1};
+
+            size_t blkSizeX = 16, blkSizeY = 16;
+            size_t glbSizeX;
+            size_t cols;
+            //if(src.type() == CV_8UC1 && interpolation != 2)
+            if(src.type() == CV_8UC1 && interpolation != 2)
+            {
+                cols = (dst.cols + dst.offset % 4 + 3) / 4;
+                glbSizeX = cols % blkSizeX == 0 ? cols : (cols / blkSizeX + 1) * blkSizeX;
+            }
+            else
+            {
+                cols = dst.cols;
+                glbSizeX = dst.cols % blkSizeX == 0 ? dst.cols : (dst.cols / blkSizeX + 1) * blkSizeX;
+            }
+            size_t glbSizeY = dst.rows % blkSizeY == 0 ? dst.rows : (dst.rows / blkSizeY + 1) * blkSizeY;
+            size_t globalThreads[3] = {glbSizeX, glbSizeY, 1};
+            size_t localThreads[3] = {blkSizeX, blkSizeY, 1};            
+
+            //float float_angle = saturate_cast<float>(angle);
+
+            int dstStep_in_pixel = dst.step1() / dst.oclchannels();
+            int srcStep_in_pixel = src.step1() / src.oclchannels();
+
+            cl_int st;
+            float float_coeffs[2][3];
+            cl_mem coeffs_cm;            
+            for(int m = 0; m < 2; m++)
+                for(int n = 0; n < 3; n++)
+                {
+                    float_coeffs[m][n] = inv_rot_mat.at<float>(m, n);
+                }
+            coeffs_cm = clCreateBuffer( clCxt->impl->clContext, CL_MEM_READ_WRITE, sizeof(float) * 2 * 3, NULL, &st );
+            openCLSafeCall(clEnqueueWriteBuffer(clCxt->impl->clCmdQueue, (cl_mem)coeffs_cm, 1, 0, sizeof(float) * 2 * 3, float_coeffs, 0, 0, 0));            
+            
+            //set args
+            vector<pair<size_t , const void *> > args;
+            args.push_back( make_pair( sizeof(cl_mem)  , (void *)&dst.data ));
+            args.push_back( make_pair( sizeof(cl_mem)  , (void *)&src.data ));
+            args.push_back( make_pair( sizeof(cl_int)  , (void *)&dstStep_in_pixel ));
+            args.push_back( make_pair( sizeof(cl_int)  , (void *)&srcStep_in_pixel ));
+            // args.push_back( make_pair( sizeof(cl_int) , (void *)&dst.offset ));
+            // args.push_back( make_pair( sizeof(cl_int) , (void *)&src.offset ));
+            args.push_back( make_pair( sizeof(cl_int)  , (void *)&dst.cols ));
+            args.push_back( make_pair( sizeof(cl_int)  , (void *)&dst.rows ));
+            args.push_back( make_pair( sizeof(cl_mem)  , (void *)&coeffs_cm ));
+            openCLExecuteKernel(clCxt, &imgproc_rotate, "rotate_32FC1", globalThreads, localThreads, args, -1, -1);
+            openCLSafeCall(clReleaseMemObject(coeffs_cm));
+        }
+
+    
         /////////////////////////////////// MeanShiftfiltering ///////////////////////////////////////////////
         void meanShiftFiltering_gpu(const oclMat &src, oclMat dst, int sp, int sr, int maxIter, float eps)
         {

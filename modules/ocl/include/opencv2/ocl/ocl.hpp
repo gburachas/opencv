@@ -709,6 +709,11 @@ namespace cv
         CV_EXPORTS void cornerHarris(const oclMat &src, oclMat &dst, int blockSize, int ksize, double k, int bordertype = cv::BORDER_DEFAULT);
         CV_EXPORTS void cornerMinEigenVal(const oclMat &src, oclMat &dst, int blockSize, int ksize, int bordertype = cv::BORDER_DEFAULT);
 
+        //! rotates an image around the origin (0,0) and then shifts it
+        // supports INTER_NEAREST
+        // supports 1 channel images with CV_32F depth
+        CV_EXPORTS void rotate(const oclMat& src, oclMat& dst, Size dsize, double angle,
+                               double xShift, double yShift, int interpolation = INTER_LINEAR);    
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         ///////////////////////////////////////////CascadeClassifier//////////////////////////////////////////////////////////////////
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
